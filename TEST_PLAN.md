@@ -58,7 +58,16 @@ Verifies source conforms to Crystal's canonical formatting.
 
 **Pass criteria:** exit code 0.
 
-### 1.4 Library load test
+### 1.4 Ameba static analysis
+
+    make deps   # one-time: installs Ameba shard
+    make lint
+
+Runs the Ameba linter across `src/`.
+
+**Pass criteria:** 0 issues reported.
+
+### 1.5 Library load test
 
     python3 -c "import ctypes; ctypes.CDLL('./libnss_exec.so.2'); print('OK')"
 
@@ -295,7 +304,7 @@ Verified passing on Alma 9 with Crystal 1.19.1:
 ## Quick Reference
 
     # Tier 1 (every commit)
-    make && make symbols && make check
+    make && make symbols && make check && make lint
 
     # Tier 2 (script-only, no root)
     cd test && ./generate_test_data.sh && ./stress_test.sh -N

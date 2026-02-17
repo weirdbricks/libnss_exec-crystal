@@ -31,7 +31,7 @@ CRYSTAL_FLAGS := --release --no-debug
 LINK_FLAGS    := -shared -Wl,-soname,$(LIB_FILE)
 
 # ── Phony targets ────────────────────────────────────────────────────────
-.PHONY: all build clean install uninstall format check symbols help
+.PHONY: all build clean install uninstall format check symbols deps lint help
 
 # ── Default ──────────────────────────────────────────────────────────────
 all: build
@@ -90,11 +90,24 @@ format:
 	$(CRYSTAL) tool format $(SRC_DIR)/
 	@echo "==> Done."
 
+# ── Linting ───────────────────────────────────────────────────────────
+deps:
+	@echo "==> Installing shard dependencies ..."
+	shards install
+
+lint: deps
+	@echo "==> Running Ameba linter ..."
+	./bin/ameba $(SRC_DIR)/
+	@echo "==> Ameba passed."
+
 # ── Clean ────────────────────────────────────────────────────────────────
 clean:
 	@echo "==> Cleaning ..."
 	$(RM) $(LIB_FILE) *.o *.dwarf
 	@echo "==> Clean."
+
+distclean: clean
+	$(RM) -r lib/ bin/ .shards/
 
 # ── Help ─────────────────────────────────────────────────────────────────
 help:
@@ -107,7 +120,10 @@ help:
 	@echo "  uninstall  Remove the installed library"
 	@echo "  check      Verify code formatting"
 	@echo "  format     Auto-format Crystal source"
+	@echo "  deps       Install shard dependencies (Ameba)"
+	@echo "  lint       Run Ameba static analysis"
 	@echo "  clean      Remove build artifacts"
+	@echo "  distclean  Remove build artifacts and shard deps"
 	@echo "  help       This message"
 	@echo ""
 	@echo "Variables:"

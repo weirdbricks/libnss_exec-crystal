@@ -158,6 +158,70 @@ end
 
 # ─── Script execution ────────────────────────────────────────────────────────
 
+# Run the child process after fork: redirect stdout to pipe, execve the script.
+# This function NEVER returns — it calls execve or _exit.
+private def exec_child(pipefd : StaticArray(Int32, 2), command : UInt8*, argument : UInt8*) : NoReturn
+  LibC.close(pipefd[0])
+  LibC.dup2(pipefd[1], 1)
+  LibC.close(pipefd[1])
+
+  argv = uninitialized UInt8*[4]
+  argv[0] = NSS_EXEC_SCRIPT.to_unsafe
+  argv[1] = command
+  argv[2] = argument.null? ? Pointer(UInt8).null : argument
+  argv[3] = Pointer(UInt8).null
+
+  envp = uninitialized UInt8*[2]
+  envp[0] = "PATH=/usr/bin:/bin:/usr/sbin:/sbin".to_unsafe
+  envp[1] = Pointer(UInt8).null
+
+  LibC.execve(NSS_EXEC_SCRIPT.to_unsafe, argv.to_unsafe, envp.to_unsafe)
+  LibC._exit(127)
+end
+
+# Read child output from pipe into out_buf. Returns bytes read.
+# If out_buf is null or out_size <= 1, drains the pipe without storing.
+private def read_pipe_output(fd : Int32, out_buf : UInt8*, out_size : LibC::SizeT) : LibC::SizeT
+  if out_buf.null? || out_size <= 1
+    drain = uninitialized UInt8[256]
+    loop do
+      bytes = LibC.read(fd, drain.to_unsafe.as(Void*), 256_u64)
+      break if bytes <= 0
+    end
+    return 0_u64
+  end
+
+  total = 0_u64
+  loop do
+    break if total &+ 1 >= out_size
+    remaining = out_size &- total &- 1
+    break if remaining == 0
+    bytes = LibC.read(fd, (out_buf + total).as(Void*), remaining)
+    break if bytes <= 0
+    total = total &+ bytes.to_u64
+  end
+  out_buf[total] = 0_u8
+
+  # Strip trailing newlines
+  while total > 0 && (out_buf[total &- 1] == '\n'.ord.to_u8 || out_buf[total &- 1] == '\r'.ord.to_u8)
+    total = total &- 1
+    out_buf[total] = 0_u8
+  end
+
+  total
+end
+
+# Map a child exit code (from waitpid) to an NSS status.
+private def exit_code_to_status(wait_status : Int32) : Int32
+  exit_code = (wait_status >> 8) & 0xFF
+  case exit_code
+  when 0 then NSS_STATUS_SUCCESS
+  when 1 then NSS_STATUS_NOTFOUND
+  when 2 then NSS_STATUS_TRYAGAIN
+  else        NSS_STATUS_UNAVAIL
+  end
+end
+
 # Execute /sbin/nss_exec with command + optional argument via fork/execve.
 # Reads one line of output into `out_buf` (caller-provided, `out_size` bytes).
 # Returns {nss_status, bytes_read}.
@@ -175,77 +239,16 @@ private def exec_script(command : UInt8*, argument : UInt8*,
     return {NSS_STATUS_UNAVAIL, 0_u64}
   end
 
-  if pid == 0
-    # ── Child ────────────────────────────────────────────────────────
-    LibC.close(pipefd[0])
-    LibC.dup2(pipefd[1], 1)
-    LibC.close(pipefd[1])
+  exec_child(pipefd, command, argument) if pid == 0
 
-    if argument.null?
-      argv = uninitialized UInt8*[4]
-      argv[0] = NSS_EXEC_SCRIPT.to_unsafe
-      argv[1] = command
-      argv[2] = Pointer(UInt8).null
-      argv[3] = Pointer(UInt8).null
-    else
-      argv = uninitialized UInt8*[4]
-      argv[0] = NSS_EXEC_SCRIPT.to_unsafe
-      argv[1] = command
-      argv[2] = argument
-      argv[3] = Pointer(UInt8).null
-    end
-
-    envp = uninitialized UInt8*[2]
-    envp[0] = "PATH=/usr/bin:/bin:/usr/sbin:/sbin".to_unsafe
-    envp[1] = Pointer(UInt8).null
-
-    LibC.execve(NSS_EXEC_SCRIPT.to_unsafe, argv.to_unsafe, envp.to_unsafe)
-    LibC._exit(127)
-  end
-
-  # ── Parent ──────────────────────────────────────────────────────────
   LibC.close(pipefd[1])
-
-  total = 0_u64
-  if !out_buf.null? && out_size > 1
-    loop do
-      break if total &+ 1 >= out_size # wrapping add to avoid overflow
-      remaining = out_size &- total &- 1
-      break if remaining == 0
-      bytes = LibC.read(pipefd[0], (out_buf + total).as(Void*), remaining)
-      break if bytes <= 0
-      total = total &+ bytes.to_u64
-    end
-    out_buf[total] = 0_u8
-
-    # Strip trailing newline
-    while total > 0 && (out_buf[total &- 1] == '\n'.ord.to_u8 || out_buf[total &- 1] == '\r'.ord.to_u8)
-      total = total &- 1
-      out_buf[total] = 0_u8
-    end
-  else
-    # No output buffer — just drain the pipe
-    drain = uninitialized UInt8[256]
-    loop do
-      bytes = LibC.read(pipefd[0], drain.to_unsafe.as(Void*), 256_u64)
-      break if bytes <= 0
-    end
-  end
-
+  total = read_pipe_output(pipefd[0], out_buf, out_size)
   LibC.close(pipefd[0])
 
   wait_status = 0
   LibC.waitpid(pid, pointerof(wait_status), 0)
-  exit_code = (wait_status >> 8) & 0xFF
 
-  status = case exit_code
-           when 0 then NSS_STATUS_SUCCESS
-           when 1 then NSS_STATUS_NOTFOUND
-           when 2 then NSS_STATUS_TRYAGAIN
-           else        NSS_STATUS_UNAVAIL
-           end
-
-  {status, total}
+  {exit_code_to_status(wait_status), total}
 end
 
 # Convenience: format an Int64 as a decimal string into a stack buffer.
@@ -366,6 +369,43 @@ end
 
 # ─── Group ───────────────────────────────────────────────────────────────────
 
+# Count comma-separated members in a field.
+private def count_csv_members(field : UInt8*, field_len : LibC::SizeT) : Int32
+  return 0 if field.null? || field_len == 0
+  count = 1
+  i = 0_u64
+  while i < field_len
+    count += 1 if field[i] == ','.ord.to_u8
+    i += 1
+  end
+  count
+end
+
+# Write comma-separated member strings into the buffer and pointer array.
+# Returns the number of members written, or -1 on buffer overflow.
+private def write_csv_members(field : UInt8*, field_len : LibC::SizeT,
+                              gr_mem : UInt8**, cursor : UInt8**,
+                              remaining : LibC::SizeT*) : Int32
+  mem_idx = 0
+  mem_start = 0_u64
+  i = 0_u64
+  while i <= field_len
+    if i == field_len || field[i] == ','.ord.to_u8
+      mem_len = i &- mem_start
+      if mem_len > 0
+        ptr = buf_write_str(field + mem_start, mem_len, cursor, remaining)
+        return -1 if ptr.null?
+        gr_mem[mem_idx] = ptr
+        mem_idx += 1
+      end
+      mem_start = i + 1
+    end
+    i += 1
+  end
+  gr_mem[mem_idx] = Pointer(UInt8).null
+  mem_idx
+end
+
 private def fill_group(line : UInt8*, line_len : LibC::SizeT,
                        result : LibC::Group*, buffer : UInt8*,
                        buflen : LibC::SizeT, errnop : LibC::Int*) : Int32
@@ -389,23 +429,17 @@ private def fill_group(line : UInt8*, line_len : LibC::SizeT,
     f_mem, f_mem_len = get_field(line, line_len, 3)
   end
 
-  # Count members
-  num_members = 0
-  if !f_mem.null? && f_mem_len > 0
-    num_members = 1
-    i = 0_u64
-    while i < f_mem_len
-      num_members += 1 if f_mem[i] == ','.ord.to_u8
-      i += 1
-    end
-  end
+  num_members = count_csv_members(f_mem, f_mem_len)
 
   cursor = buffer
   remaining = buflen
 
   gr_name = buf_write_str(f_name, f_name_len, pointerof(cursor), pointerof(remaining))
   gr_passwd = buf_write_str(f_passwd, f_passwd_len, pointerof(cursor), pointerof(remaining))
-  return NSS_STATUS_TRYAGAIN if gr_name.null? || gr_passwd.null?
+  if gr_name.null? || gr_passwd.null?
+    errnop.value = LibC::ERANGE
+    return NSS_STATUS_TRYAGAIN
+  end
 
   # Align for pointer array
   unless buf_align(pointerof(cursor), pointerof(remaining))
@@ -423,28 +457,11 @@ private def fill_group(line : UInt8*, line_len : LibC::SizeT,
   cursor = cursor + array_bytes
   remaining = remaining &- array_bytes
 
-  # Write each member string
   if !f_mem.null? && f_mem_len > 0
-    mem_idx = 0
-    mem_start = 0_u64
-    i = 0_u64
-    while i <= f_mem_len
-      if i == f_mem_len || f_mem[i] == ','.ord.to_u8
-        mem_len = i &- mem_start
-        if mem_len > 0
-          ptr = buf_write_str(f_mem + mem_start, mem_len, pointerof(cursor), pointerof(remaining))
-          if ptr.null?
-            errnop.value = LibC::ERANGE
-            return NSS_STATUS_TRYAGAIN
-          end
-          gr_mem[mem_idx] = ptr
-          mem_idx += 1
-        end
-        mem_start = i + 1
-      end
-      i += 1
+    if write_csv_members(f_mem, f_mem_len, gr_mem, pointerof(cursor), pointerof(remaining)) < 0
+      errnop.value = LibC::ERANGE
+      return NSS_STATUS_TRYAGAIN
     end
-    gr_mem[mem_idx] = Pointer(UInt8).null
   else
     gr_mem[0] = Pointer(UInt8).null
   end
