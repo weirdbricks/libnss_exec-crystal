@@ -2,7 +2,7 @@
 
 A Name Service Switch (NSS) module that delegates user, group, and shadow lookups to an external script. Crystal port of [tests-always-included/libnss_exec](https://github.com/tests-always-included/libnss_exec) with memory-safety improvements and idiomatic Crystal code.
 
-[![CI](https://github.com/YOUR_USERNAME/libnss_exec-crystal/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/libnss_exec-crystal/actions)
+[![CI](https://github.com/weirdbricks/libnss_exec-crystal/actions/workflows/ci.yml/badge.svg)](https://github.com/weirdbricks/libnss_exec-crystal/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 ## What does it do?
