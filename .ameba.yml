@@ -1,0 +1,34 @@
+# Ameba linter configuration for libnss_exec-crystal.
+# See https://github.com/crystal-ameba/ameba for docs.
+
+Lint/NotNil:
+  Enabled: true
+
+# We intentionally use bare rescue in FFI exports to catch everything.
+Lint/ShadowedException:
+  Enabled: true
+
+# Pointer arithmetic and raw C interop require casts that look "unidiomatic"
+# but are correct and necessary in this codebase.
+Style/RedundantReturn:
+  Enabled: false
+
+# We use class variables (@@) for enumeration state; this is intentional
+# for the NSS module pattern.
+Style/ClassVars:
+  Enabled: false
+
+# Top-level `fun` definitions are required by Crystal's FFI — they can't
+# be inside a module.
+Lint/UselessAssign:
+  Enabled: true
+
+# Our exported `fun` blocks use bare `rescue` to catch any exception type,
+# since we're the boundary between Crystal and C and must never let an
+# exception escape.
+Style/RescueException:
+  Enabled: false
+
+# Allow larger methods in FFI bridge code.
+Metrics/CyclomaticComplexity:
+  MaxComplexity: 12

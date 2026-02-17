@@ -1,0 +1,21 @@
+name: libnss_exec
+version: 2.1.0
+
+authors:
+  - Tyler Akins (original C implementation)
+
+description: |
+  NSS module that delegates passwd/group/shadow lookups to an external script.
+  Crystal port of https://github.com/tests-always-included/libnss_exec
+
+crystal: ">= 1.0.0"
+license: MIT
+
+targets:
+  test_nss_exec:
+    main: src/test_nss_exec.cr
+
+development_dependencies:
+  ameba:
+    github: crystal-ameba/ameba
+    version: ~> 1.6

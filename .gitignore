@@ -1,0 +1,19 @@
+# Crystal build artifacts
+*.so
+*.so.*
+*.o
+*.dwarf
+/test_nss_exec
+
+# Shard dependencies
+/lib/
+/bin/
+/.shards/
+shard.lock
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
