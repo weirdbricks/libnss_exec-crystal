@@ -1,12 +1,30 @@
 require "spec"
 require "../src/nss_types"
 
+# Helper to parse and assert non-nil in one step.
+# Ameba flags `not_nil!` — these helpers use `should be_a` instead.
+private def parse_passwd(line : String) : NssExec::PasswdEntry
+  result = NssExec::PasswdEntry.parse(line)
+  result.should be_a(NssExec::PasswdEntry)
+  result.as(NssExec::PasswdEntry)
+end
+
+private def parse_group(line : String) : NssExec::GroupEntry
+  result = NssExec::GroupEntry.parse(line)
+  result.should be_a(NssExec::GroupEntry)
+  result.as(NssExec::GroupEntry)
+end
+
+private def parse_shadow(line : String) : NssExec::ShadowEntry
+  result = NssExec::ShadowEntry.parse(line)
+  result.should be_a(NssExec::ShadowEntry)
+  result.as(NssExec::ShadowEntry)
+end
+
 describe NssExec::PasswdEntry do
   describe ".parse" do
     it "parses a well-formed passwd line" do
-      entry = NssExec::PasswdEntry.parse("alice:x:1001:1001:Alice Smith:/home/alice:/bin/zsh")
-      entry.should_not be_nil
-      entry = entry.not_nil!
+      entry = parse_passwd("alice:x:1001:1001:Alice Smith:/home/alice:/bin/zsh")
       entry.name.should eq "alice"
       entry.passwd.should eq "x"
       entry.uid.should eq 1001_u32
@@ -29,15 +47,13 @@ describe NssExec::PasswdEntry do
     end
 
     it "strips trailing whitespace/newlines" do
-      entry = NssExec::PasswdEntry.parse("bob:x:500:500:Bob:/home/bob:/bin/bash\n")
-      entry.should_not be_nil
-      entry.not_nil!.shell.should eq "/bin/bash"
+      entry = parse_passwd("bob:x:500:500:Bob:/home/bob:/bin/bash\n")
+      entry.shell.should eq "/bin/bash"
     end
 
     it "handles empty gecos field" do
-      entry = NssExec::PasswdEntry.parse("svc:x:999:999::/var/svc:/usr/sbin/nologin")
-      entry.should_not be_nil
-      entry.not_nil!.gecos.should eq ""
+      entry = parse_passwd("svc:x:999:999::/var/svc:/usr/sbin/nologin")
+      entry.gecos.should eq ""
     end
 
     it "returns nil on empty string" do
@@ -45,15 +61,14 @@ describe NssExec::PasswdEntry do
     end
 
     it "handles maximum UID/GID values" do
-      entry = NssExec::PasswdEntry.parse("nobody:x:4294967294:4294967294:Nobody:/:/sbin/nologin")
-      entry.should_not be_nil
-      entry.not_nil!.uid.should eq 4294967294_u32
+      entry = parse_passwd("nobody:x:4294967294:4294967294:Nobody:/:/sbin/nologin")
+      entry.uid.should eq 4294967294_u32
     end
   end
 
   describe "#fill_c_struct" do
     it "fills a passwd struct correctly" do
-      entry = NssExec::PasswdEntry.parse("alice:x:1001:1001:Alice:/home/alice:/bin/zsh").not_nil!
+      entry = parse_passwd("alice:x:1001:1001:Alice:/home/alice:/bin/zsh")
       buffer = Pointer(UInt8).malloc(4096)
       result = Pointer(LibC::Passwd).malloc(1)
 
@@ -70,7 +85,7 @@ describe NssExec::PasswdEntry do
     end
 
     it "returns 1 (ERANGE) if buffer is too small" do
-      entry = NssExec::PasswdEntry.parse("alice:x:1001:1001:Alice:/home/alice:/bin/zsh").not_nil!
+      entry = parse_passwd("alice:x:1001:1001:Alice:/home/alice:/bin/zsh")
       buffer = Pointer(UInt8).malloc(10)
       result = Pointer(LibC::Passwd).malloc(1)
 
@@ -83,36 +98,30 @@ end
 describe NssExec::GroupEntry do
   describe ".parse" do
     it "parses a group with members" do
-      entry = NssExec::GroupEntry.parse("devs:x:2000:alice,bob,charlie")
-      entry.should_not be_nil
-      entry = entry.not_nil!
+      entry = parse_group("devs:x:2000:alice,bob,charlie")
       entry.name.should eq "devs"
       entry.gid.should eq 2000_u32
       entry.members.should eq ["alice", "bob", "charlie"]
     end
 
     it "parses a group with no members" do
-      entry = NssExec::GroupEntry.parse("empty:x:3000:")
-      entry.should_not be_nil
-      entry.not_nil!.members.should be_empty
+      entry = parse_group("empty:x:3000:")
+      entry.members.should be_empty
     end
 
     it "parses a group with the members field entirely absent" do
-      entry = NssExec::GroupEntry.parse("nofield:x:3001")
-      entry.should_not be_nil
-      entry.not_nil!.members.should be_empty
+      entry = parse_group("nofield:x:3001")
+      entry.members.should be_empty
     end
 
     it "handles single member" do
-      entry = NssExec::GroupEntry.parse("solo:x:4000:alice")
-      entry.should_not be_nil
-      entry.not_nil!.members.should eq ["alice"]
+      entry = parse_group("solo:x:4000:alice")
+      entry.members.should eq ["alice"]
     end
 
     it "rejects trailing empty members from 'alice,'" do
-      entry = NssExec::GroupEntry.parse("g:x:1:alice,")
-      entry.should_not be_nil
-      entry.not_nil!.members.should eq ["alice"]
+      entry = parse_group("g:x:1:alice,")
+      entry.members.should eq ["alice"]
     end
 
     it "returns nil for non-numeric GID" do
@@ -126,7 +135,7 @@ describe NssExec::GroupEntry do
 
   describe "#fill_c_struct" do
     it "fills a group struct with members" do
-      entry = NssExec::GroupEntry.parse("devs:x:2000:alice,bob").not_nil!
+      entry = parse_group("devs:x:2000:alice,bob")
       buffer = Pointer(UInt8).malloc(4096)
       result = Pointer(LibC::Group).malloc(1)
 
@@ -136,15 +145,14 @@ describe NssExec::GroupEntry do
       String.new(result.value.gr_name).should eq "devs"
       result.value.gr_gid.should eq 2000
 
-      # Check members array
       mem = result.value.gr_mem
       String.new(mem[0]).should eq "alice"
       String.new(mem[1]).should eq "bob"
-      mem[2].null?.should be_true # NULL terminator
+      mem[2].null?.should be_true
     end
 
     it "fills an empty-member group with a NULL-terminated array" do
-      entry = NssExec::GroupEntry.parse("empty:x:3000:").not_nil!
+      entry = parse_group("empty:x:3000:")
       buffer = Pointer(UInt8).malloc(4096)
       result = Pointer(LibC::Group).malloc(1)
 
@@ -159,24 +167,20 @@ end
 describe NssExec::ShadowEntry do
   describe ".parse" do
     it "parses a full shadow line" do
-      entry = NssExec::ShadowEntry.parse("alice:$6$hash:18500:0:99999:7:::")
-      entry.should_not be_nil
-      entry = entry.not_nil!
+      entry = parse_shadow("alice:$6$hash:18500:0:99999:7:::")
       entry.name.should eq "alice"
       entry.passwd.should eq "$6$hash"
       entry.lastchg.should eq 18500_i64
       entry.min.should eq 0_i64
       entry.max.should eq 99999_i64
       entry.warn.should eq 7_i64
-      entry.inact.should eq(-1_i64)  # empty → -1
+      entry.inact.should eq(-1_i64)
       entry.expire.should eq(-1_i64)
       entry.flag.should eq 0_u64
     end
 
     it "handles minimal shadow line (just name:passwd)" do
-      entry = NssExec::ShadowEntry.parse("bob:!")
-      entry.should_not be_nil
-      entry = entry.not_nil!
+      entry = parse_shadow("bob:!")
       entry.name.should eq "bob"
       entry.passwd.should eq "!"
       entry.lastchg.should eq(-1_i64)
@@ -189,7 +193,7 @@ describe NssExec::ShadowEntry do
 
   describe "#fill_c_struct" do
     it "fills a spwd struct" do
-      entry = NssExec::ShadowEntry.parse("alice:!:18000:0:99999:7:::").not_nil!
+      entry = parse_shadow("alice:!:18000:0:99999:7:::")
       buffer = Pointer(UInt8).malloc(4096)
       result = Pointer(LibC::Spwd).malloc(1)
 
@@ -211,15 +215,17 @@ describe NssExec::BufferWriter do
       writer = NssExec::BufferWriter.new(buf, 100_u64)
 
       ptr = writer.write_string("hello")
-      ptr.should_not be_nil
-      String.new(ptr.not_nil!).should eq "hello"
+      if ptr
+        String.new(ptr).should eq "hello"
+      else
+        fail "expected non-nil pointer"
+      end
     end
 
     it "returns nil when buffer is too small" do
       buf = Pointer(UInt8).malloc(3)
       writer = NssExec::BufferWriter.new(buf, 3_u64)
 
-      # "hello" needs 6 bytes (5 + NUL), only 3 available
       writer.write_string("hello").should be_nil
     end
 
@@ -229,10 +235,12 @@ describe NssExec::BufferWriter do
 
       p1 = writer.write_string("abc")
       p2 = writer.write_string("def")
-      p1.should_not be_nil
-      p2.should_not be_nil
-      String.new(p1.not_nil!).should eq "abc"
-      String.new(p2.not_nil!).should eq "def"
+      if p1 && p2
+        String.new(p1).should eq "abc"
+        String.new(p2).should eq "def"
+      else
+        fail "expected non-nil pointers"
+      end
     end
   end
 
@@ -242,12 +250,14 @@ describe NssExec::BufferWriter do
       writer = NssExec::BufferWriter.new(buf, 4096_u64)
 
       arr = writer.write_string_array(["a", "b", "c"])
-      arr.should_not be_nil
-      arr = arr.not_nil!
-      String.new(arr[0]).should eq "a"
-      String.new(arr[1]).should eq "b"
-      String.new(arr[2]).should eq "c"
-      arr[3].null?.should be_true
+      if arr
+        String.new(arr[0]).should eq "a"
+        String.new(arr[1]).should eq "b"
+        String.new(arr[2]).should eq "c"
+        arr[3].null?.should be_true
+      else
+        fail "expected non-nil array"
+      end
     end
 
     it "writes a NULL-only array for empty input" do
@@ -255,8 +265,11 @@ describe NssExec::BufferWriter do
       writer = NssExec::BufferWriter.new(buf, 4096_u64)
 
       arr = writer.write_string_array([] of String)
-      arr.should_not be_nil
-      arr.not_nil![0].null?.should be_true
+      if arr
+        arr[0].null?.should be_true
+      else
+        fail "expected non-nil array"
+      end
     end
   end
 end

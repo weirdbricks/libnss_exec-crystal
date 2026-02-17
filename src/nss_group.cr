@@ -86,31 +86,31 @@ end
 
 fun _nss_exec_setgrent(stayopen : LibC::Int) : LibC::Int
   NssExec::Group.setgrent(stayopen).value
-rescue
-  NssExec::NssStatus::UNAVAIL.value
+    rescue
+      NssExec::NssStatus::UNAVAIL.value
 end
 
 fun _nss_exec_endgrent : LibC::Int
   NssExec::Group.endgrent.value
-rescue
-  NssExec::NssStatus::SUCCESS.value
+    rescue
+      NssExec::NssStatus::SUCCESS.value
 end
 
 fun _nss_exec_getgrent_r(result : LibC::Group*, buffer : UInt8*,
                          buflen : LibC::SizeT, errnop : LibC::Int*) : LibC::Int
   NssExec::Group.getgrent(result, buffer, buflen, errnop).value
-rescue
-  errnop.value = LibC::ENOENT
-  NssExec::NssStatus::UNAVAIL.value
+    rescue
+      errnop.value = LibC::ENOENT
+      NssExec::NssStatus::UNAVAIL.value
 end
 
 fun _nss_exec_getgrgid_r(gid : LibC::GidT, result : LibC::Group*,
                          buffer : UInt8*, buflen : LibC::SizeT,
                          errnop : LibC::Int*) : LibC::Int
   NssExec::Group.getgrgid(gid, result, buffer, buflen, errnop).value
-rescue
-  errnop.value = LibC::ENOENT
-  NssExec::NssStatus::UNAVAIL.value
+    rescue
+      errnop.value = LibC::ENOENT
+      NssExec::NssStatus::UNAVAIL.value
 end
 
 fun _nss_exec_getgrnam_r(name : UInt8*, result : LibC::Group*,
@@ -118,7 +118,7 @@ fun _nss_exec_getgrnam_r(name : UInt8*, result : LibC::Group*,
                          errnop : LibC::Int*) : LibC::Int
   name_str = String.new(name)
   NssExec::Group.getgrnam(name_str, result, buffer, buflen, errnop).value
-rescue
-  errnop.value = LibC::ENOENT
-  NssExec::NssStatus::UNAVAIL.value
+    rescue
+      errnop.value = LibC::ENOENT
+      NssExec::NssStatus::UNAVAIL.value
 end
