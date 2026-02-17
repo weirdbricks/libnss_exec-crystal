@@ -3,13 +3,15 @@
 *.so.*
 *.o
 *.dwarf
-/test_nss_exec
 
 # Shard dependencies
 /lib/
 /bin/
 /.shards/
 shard.lock
+
+# Generated test data
+/test/test_data/
 
 # Editor / OS
 .vscode/

@@ -1,115 +1,109 @@
-# libnss_exec — Crystal Implementation
+# libnss_exec-crystal
 
-A Name Service Switch (NSS) module that delegates user, group, and shadow lookups to an external script. Crystal port of [tests-always-included/libnss_exec](https://github.com/tests-always-included/libnss_exec) with memory-safety improvements and idiomatic Crystal code.
+A glibc NSS module written in Crystal that delegates passwd, group, and shadow
+lookups to an external script (`/sbin/nss_exec`). Crystal port of
+[tests-always-included/libnss_exec](https://github.com/tests-always-included/libnss_exec).
 
-[![CI](https://github.com/YOUR_USERNAME/libnss_exec-crystal/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/libnss_exec-crystal/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+## v3.0.0 — No-GC rewrite
 
-## What does it do?
+This version is a complete rewrite using only raw C library calls. No Crystal
+GC, no runtime, no hidden allocations. This makes the shared library safe for
+`dlopen()` loading by glibc, which is how NSS modules are loaded.
 
-When you add `exec` to `/etc/nsswitch.conf`, glibc calls this shared library for user/group lookups. The library executes `/sbin/nss_exec` with a command and argument, parses the colon-delimited output, and returns the result to glibc.
+### Architecture
 
-Use cases: mapping all users to a single UID, querying a remote API, integrating with a custom database, logging authentication attempts, testing.
+The entire module is a single file (`src/libnss_exec.cr`) that:
 
-## Prerequisites
+- Parses colon-delimited NSS entries using `strtoul`/`strtol` and manual field splitting
+- Writes all output into glibc's caller-provided buffer (zero heap allocations)
+- Executes `/sbin/nss_exec` via `fork`/`execve` (no shell, no injection risk)
+- Uses wrapping arithmetic (`&+`, `&-`) throughout to prevent overflow exceptions
+- Exports 14 standard NSS entry points (`_nss_exec_getpwnam_r`, etc.)
 
-- Crystal >= 1.0.0 (`curl -fsSL https://crystal-lang.org/install.sh | sudo bash`)
-- Linux with glibc
-- Root access for installation
+### Why not use Crystal's standard library?
 
-## Quick start
-
-```bash
-# Build
-make
-
-# Run unit tests (no root needed)
-make spec
-
-# Install (as root)
-sudo make install
-
-# Create and enable your script
-sudo install -m 755 examples/nss_exec.sh /sbin/nss_exec
-
-# Edit /etc/nsswitch.conf — add 'exec' AFTER existing sources:
-#   passwd: files systemd exec
-#   group:  files systemd exec
-#   shadow: files exec
-
-# Test
-getent passwd testuser
-```
-
-## Project structure
-
-```
-├── src/
-│   ├── nss_types.cr      # Entry types, BufferWriter, LibC struct bindings
-│   ├── nss_exec.cr        # Script execution, shell escaping, status mapping
-│   ├── nss_passwd.cr      # passwd NSS functions + C exports
-│   ├── nss_group.cr       # group NSS functions + C exports
-│   └── nss_shadow.cr      # shadow NSS functions + C exports
-├── spec/
-│   └── nss_types_spec.cr  # Unit tests for parsing and buffer management
-├── examples/
-│   └── nss_exec.sh        # Example /sbin/nss_exec script
-├── .github/workflows/
-│   └── ci.yml             # GitHub Actions: build + spec + lint
-├── .ameba.yml             # Ameba linter configuration
-├── shard.yml              # Crystal dependency manifest
-├── Makefile               # Build, test, lint, install
-└── LICENSE
-```
+Crystal's stdlib assumes it owns the process — it initializes a GC, fiber
+scheduler, signal handlers, and more. When glibc loads an NSS module via
+`dlopen()`, none of that initialization happens, causing segfaults on the
+first string allocation. v3.0.0 eliminates this entire class of bugs by
+not depending on the Crystal runtime at all.
 
 ## Building
 
-| Command | Description |
-|---------|-------------|
-| `make` | Build `libnss_exec.so.2` |
-| `make spec` | Run Crystal spec suite |
-| `make lint` | Run Ameba static analysis |
-| `make check` | Verify formatting (non-destructive) |
-| `make format` | Auto-format source |
-| `make install` | Install to system (needs root) |
-| `make uninstall` | Remove from system |
-| `make help` | Show all targets |
+Requires Crystal >= 1.0.0 and Linux with glibc.
 
-## Writing your script
+    make                # Build libnss_exec.so.2
+    make symbols        # Verify exported NSS entry points
+    make format         # Auto-format source
 
-The script at `/sbin/nss_exec` receives two arguments: a command name and an optional parameter. It prints one line to stdout and exits with a status code.
+## Installation
 
-**Exit codes:**
+    # Build and install the library
+    sudo make install
 
-| Code | Meaning |
-|------|---------|
-| 0 | Entry found (print it to stdout) |
-| 1 | Not found |
-| 2 | Temporary failure, retry |
-| 3+ | Service unavailable |
+    # Install your lookup script
+    sudo cp examples/nss_exec.sh /sbin/nss_exec
+    sudo chmod 755 /sbin/nss_exec
 
-**Output formats:**
+    # Configure NSS (add 'exec' AFTER 'files')
+    # passwd: files systemd exec
+    # group:  files systemd exec
+    # shadow: files exec
+    sudo vi /etc/nsswitch.conf
 
-```
-# passwd — name:passwd:uid:gid:gecos:dir:shell
-alice:x:1001:1001:Alice Smith:/home/alice:/bin/zsh
+    # Test
+    getent passwd testuser
 
-# group — name:passwd:gid:member1,member2
-developers:x:2000:alice,bob
+See [TEST_PLAN.md](TEST_PLAN.md) for detailed installation and testing
+instructions, including a step-by-step guide for setting up a test VM.
 
-# shadow — name:passwd:lastchg:min:max:warn:inact:expire:flag
-alice:$6$...:18500:0:99999:7:::
-```
+## Script interface
 
-See `examples/nss_exec.sh` for a complete working example.
+The module calls `/sbin/nss_exec` with a command and optional argument:
 
-## Security notes
+    /sbin/nss_exec getpwnam <username>    # Lookup user by name
+    /sbin/nss_exec getpwuid <uid>         # Lookup user by UID
+    /sbin/nss_exec getgrnam <groupname>   # Lookup group by name
+    /sbin/nss_exec getgrgid <gid>         # Lookup group by GID
+    /sbin/nss_exec getspnam <username>    # Lookup shadow by name
+    /sbin/nss_exec getpwent <index>       # Enumerate passwd entry N
+    /sbin/nss_exec getgrent <index>       # Enumerate group entry N
+    /sbin/nss_exec getspent <index>       # Enumerate shadow entry N
+    /sbin/nss_exec setpwent               # Begin passwd enumeration
+    /sbin/nss_exec endpwent               # End passwd enumeration
+    (same for setgrent/endgrent, setspent/endspent)
 
-- User input is shell-escaped before being passed to the script (prevents injection).
-- The script runs with the privileges of the calling process.
-- Shadow lookups require root.
-- Consider caching with `nscd` or `unscd` — NSS lookups happen frequently.
+Exit codes: 0 = found, 1 = not found, 2 = try again, other = unavailable.
+
+Output format (one line to stdout):
+
+    passwd: name:passwd:uid:gid:gecos:dir:shell
+    group:  name:passwd:gid:member1,member2,...
+    shadow: name:passwd:lastchg:min:max:warn:inact:expire:flag
+
+## Testing
+
+    # Generate test data (1000 users, 100 groups)
+    cd test
+    ./generate_test_data.sh -u 1000 -g 100
+
+    # Script-only stress test (no root needed)
+    ./stress_test.sh -d ./test_data -N
+
+    # Full NSS integration test (requires root, installed library)
+    ./stress_test.sh -d ./test_data -n 1000 -c 20
+
+See [TEST_PLAN.md](TEST_PLAN.md) for the complete test plan.
+
+## Project structure
+
+    src/libnss_exec.cr         Single-file NSS module (no GC, no runtime)
+    test/generate_test_data.sh Generates randomized test data + lookup script
+    test/stress_test.sh        Comprehensive stress test suite
+    examples/nss_exec.sh       Example lookup script
+    TEST_PLAN.md               Full test plan with installation guide
+    Makefile                   Build, install, format
 
 ## License
 
-MIT — see [LICENSE](./LICENSE). Original C implementation by Tyler Akins.
+MIT — see [LICENSE](LICENSE).

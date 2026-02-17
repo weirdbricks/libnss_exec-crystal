@@ -1,17 +1,18 @@
-# Makefile for libnss_exec — Crystal implementation
+# Makefile for libnss_exec — Crystal implementation (v3.0.0)
+#
+# Single-file build: src/libnss_exec.cr → libnss_exec.so.2
+# No GC, no Crystal runtime dependencies. Safe for dlopen().
 #
 # Copyright (c) 2025 libnss_exec-crystal contributors
 # License: MIT
 
 # ── Tools ────────────────────────────────────────────────────────────────
 CRYSTAL  := crystal
-SHARDS   := shards
 INSTALL  := install
 RM       := rm -f
 
 # ── Installation paths ───────────────────────────────────────────────────
 PREFIX   := /usr
-# Detect multiarch lib directory (Debian/Ubuntu use lib/x86_64-linux-gnu).
 LIBDIR   ?= $(shell pkg-config --variable=libdir libc 2>/dev/null || echo $(PREFIX)/lib)
 SBINDIR  := $(PREFIX)/sbin
 DESTDIR  :=
@@ -23,18 +24,14 @@ LIB_FILE    := $(LIB_NAME).so.$(LIB_VERSION)
 
 # ── Source files ─────────────────────────────────────────────────────────
 SRC_DIR  := src
-SOURCES  := $(wildcard $(SRC_DIR)/*.cr)
-SPEC_DIR := spec
-SPECS    := $(wildcard $(SPEC_DIR)/*_spec.cr)
+SRC_FILE := $(SRC_DIR)/libnss_exec.cr
 
 # ── Compiler flags ───────────────────────────────────────────────────────
 CRYSTAL_FLAGS := --release --no-debug
 LINK_FLAGS    := -shared -Wl,-soname,$(LIB_FILE)
 
 # ── Phony targets ────────────────────────────────────────────────────────
-.PHONY: all build clean install uninstall \
-        test spec lint format check \
-        deps help
+.PHONY: all build clean install uninstall format check symbols help
 
 # ── Default ──────────────────────────────────────────────────────────────
 all: build
@@ -42,18 +39,20 @@ all: build
 # ── Build the shared library ─────────────────────────────────────────────
 build: $(LIB_FILE)
 
-$(LIB_FILE): $(SOURCES)
+$(LIB_FILE): $(SRC_FILE)
 	@echo "==> Building $(LIB_FILE) ..."
 	$(CRYSTAL) build $(CRYSTAL_FLAGS) \
 		--link-flags "$(LINK_FLAGS)" \
 		-o $(LIB_FILE) \
-		$(SRC_DIR)/nss_passwd.cr $(SRC_DIR)/nss_group.cr $(SRC_DIR)/nss_shadow.cr
+		$(SRC_FILE)
 	@echo "==> $(LIB_FILE) built successfully."
 
-# ── Install dependencies (Ameba, etc.) ───────────────────────────────────
-deps:
-	@echo "==> Installing shard dependencies ..."
-	$(SHARDS) install
+# ── Verify exported symbols ──────────────────────────────────────────────
+symbols: $(LIB_FILE)
+	@echo "==> Exported NSS symbols:"
+	@nm -D $(LIB_FILE) | grep ' T _nss_exec' | sort
+	@count=$$(nm -D $(LIB_FILE) | grep -c ' T _nss_exec'); \
+		echo "==> $$count symbols exported (expected: 14)"
 
 # ── Install the library ──────────────────────────────────────────────────
 install: $(LIB_FILE)
@@ -79,69 +78,47 @@ uninstall:
 	fi
 	@echo "==> Uninstalled. Remember to remove 'exec' from /etc/nsswitch.conf."
 
-# ── Testing ──────────────────────────────────────────────────────────────
-# Run Crystal spec suite (pure-Crystal unit tests, no root needed).
-spec:
-	@echo "==> Running specs ..."
-	$(CRYSTAL) spec $(SPEC_DIR)/
-
-# Alias
-test: spec
-
-# ── Linting & formatting ────────────────────────────────────────────────
-# Check Crystal formatting (non-destructive).
+# ── Formatting ───────────────────────────────────────────────────────────
 check:
 	@echo "==> Checking formatting ..."
-	$(CRYSTAL) tool format --check $(SRC_DIR)/ $(SPEC_DIR)/ || \
+	$(CRYSTAL) tool format --check $(SRC_DIR)/ || \
 		{ echo "Run 'make format' to fix."; exit 1; }
 	@echo "==> Formatting OK."
 
-# Auto-format Crystal source.
 format:
 	@echo "==> Formatting ..."
-	$(CRYSTAL) tool format $(SRC_DIR)/ $(SPEC_DIR)/
+	$(CRYSTAL) tool format $(SRC_DIR)/
 	@echo "==> Done."
-
-# Run Ameba static analysis.
-lint: deps
-	@echo "==> Running Ameba linter ..."
-	./bin/ameba $(SRC_DIR)/ $(SPEC_DIR)/
-	@echo "==> Ameba passed."
 
 # ── Clean ────────────────────────────────────────────────────────────────
 clean:
 	@echo "==> Cleaning ..."
-	$(RM) $(LIB_FILE) test_nss_exec *.o *.dwarf
+	$(RM) $(LIB_FILE) *.o *.dwarf
 	@echo "==> Clean."
-
-# Deep clean including shard deps
-distclean: clean
-	$(RM) -r lib/ bin/ .shards/
 
 # ── Help ─────────────────────────────────────────────────────────────────
 help:
-	@echo "libnss_exec Crystal Implementation"
+	@echo "libnss_exec — Crystal NSS module (v3.0.0, no-GC)"
 	@echo ""
 	@echo "Targets:"
 	@echo "  build      Build the NSS shared library (default)"
+	@echo "  symbols    Show exported NSS entry points"
 	@echo "  install    Install to \$$(LIBDIR)"
 	@echo "  uninstall  Remove the installed library"
-	@echo "  deps       Install shard dependencies (Ameba)"
-	@echo "  spec       Run Crystal spec test suite"
-	@echo "  test       Alias for spec"
 	@echo "  check      Verify code formatting"
 	@echo "  format     Auto-format Crystal source"
-	@echo "  lint       Run Ameba static analysis"
 	@echo "  clean      Remove build artifacts"
-	@echo "  distclean  Remove build artifacts and shard deps"
 	@echo "  help       This message"
 	@echo ""
 	@echo "Variables:"
 	@echo "  PREFIX=$(PREFIX)  LIBDIR=$(LIBDIR)  DESTDIR=$(DESTDIR)"
 	@echo ""
-	@echo "Examples:"
+	@echo "Quick start:"
 	@echo "  make                         # Build library"
-	@echo "  make spec                    # Run unit tests"
-	@echo "  make lint                    # Static analysis"
+	@echo "  make symbols                 # Verify NSS symbols"
 	@echo "  sudo make install            # Install to system"
-	@echo "  make install PREFIX=/usr/local"
+	@echo ""
+	@echo "Testing:"
+	@echo "  cd test && ./generate_test_data.sh"
+	@echo "  cd test && ./stress_test.sh -N     # Script-only"
+	@echo "  cd test && ./stress_test.sh        # Full NSS integration"
