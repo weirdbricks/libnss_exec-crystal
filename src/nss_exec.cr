@@ -1,5 +1,10 @@
 # Core NSS exec module — script execution and status mapping.
 #
+# Uses fork/execve directly instead of popen("/bin/sh -c ..."). This:
+#   - Eliminates the shell as an attack surface (no injection possible)
+#   - Spawns one fewer process per lookup
+#   - Passes arguments as argv[] (no escaping needed)
+#
 # Copyright (c) 2025 libnss_exec-crystal contributors
 # Based on the original C implementation by Tyler Akins
 # Original project: https://github.com/tests-always-included/libnss_exec
@@ -7,58 +12,101 @@
 
 require "./nss_types"
 
-# Low-level C I/O — we use popen/pclose directly because this code runs
-# inside glibc's NSS machinery where we want minimal Crystal runtime
-# involvement.
+# Most POSIX functions (pipe, fork, dup2, _exit, waitpid, read, close, access)
+# are already declared in Crystal's LibC stdlib. We only need execve.
 lib LibC
-  fun popen(command : UInt8*, mode : UInt8*) : Void*
-  fun pclose(stream : Void*) : Int32
-  fun fgets(buffer : UInt8*, size : Int32, stream : Void*) : UInt8*
+  fun execve(path : UInt8*, argv : UInt8**, envp : UInt8**) : Int32
 end
 
 module NssExec
-  VERSION = "2.1.0"
+  VERSION = "2.2.0"
 
   # Path to the external script that services NSS queries.
-  # Configurable at compile time with -DNSS_EXEC_SCRIPT=/path/to/script.
   NSS_EXEC_SCRIPT = "/sbin/nss_exec"
 
-  # Maximum size of a single line read from the script's stdout.
-  EXEC_BUFFER_SIZE = 4096
+  # Maximum bytes read from the child's stdout. NSS entries are single-line
+  # and well under this limit.
+  READ_BUFFER_SIZE = 4096
 
-  # Escape a string for safe inclusion in a POSIX shell command.
-  # Wraps in single quotes and escapes any embedded single quotes.
-  # This prevents shell injection when user-supplied data (usernames,
-  # etc.) is passed as an argument to the script.
-  private def self.shell_escape(str : String) : String
-    "'" + str.gsub("'", "'\\''") + "'"
-  end
-
-  # Execute the NSS script with the given command code and optional argument.
+  # Execute the NSS script via fork/execve with the given command and optional
+  # argument. No shell is involved — arguments are passed directly as argv[].
   #
-  # Returns a tuple of {NssStatus, output_line_or_nil}.
+  # Returns {NssStatus, output_line_or_nil}.
   #
-  # The script's exit code is mapped to an NssStatus:
-  #   0 → SUCCESS
-  #   1 → NOTFOUND
-  #   2 → TRYAGAIN
-  #   * → UNAVAIL
+  # Exit code mapping:
+  #   0 → SUCCESS    1 → NOTFOUND    2 → TRYAGAIN    * → UNAVAIL
   def self.exec_script(command : String, argument : String? = nil) : {NssStatus, String?}
-    cmd = if argument
-            "#{NSS_EXEC_SCRIPT} #{command} #{shell_escape(argument)}"
-          else
-            "#{NSS_EXEC_SCRIPT} #{command}"
-          end
+    # Quick check: is the script even there and executable?
+    return {NssStatus::UNAVAIL, nil} unless LibC.access(NSS_EXEC_SCRIPT.to_unsafe, LibC::X_OK) == 0
 
-    fp = LibC.popen(cmd.to_unsafe, "r".to_unsafe)
-    return {NssStatus::UNAVAIL, nil} if fp.null?
+    # Create a pipe: child writes to pipefd[1], parent reads from pipefd[0].
+    pipefd = StaticArray(Int32, 2).new(0)
+    return {NssStatus::UNAVAIL, nil} if LibC.pipe(pipefd) != 0
 
-    # Read one line — NSS entries are always single-line.
-    buf = Pointer(UInt8).malloc(EXEC_BUFFER_SIZE)
-    got_output = !LibC.fgets(buf, EXEC_BUFFER_SIZE, fp).null?
+    pid = LibC.fork
+    if pid < 0
+      # Fork failed.
+      LibC.close(pipefd[0])
+      LibC.close(pipefd[1])
+      return {NssStatus::UNAVAIL, nil}
+    end
 
-    # pclose returns the wait-status; extract the real exit code.
-    wait_status = LibC.pclose(fp)
+    if pid == 0
+      # ── Child process ──────────────────────────────────────────────
+      # Redirect stdout to the write end of the pipe.
+      LibC.close(pipefd[0])
+      LibC.dup2(pipefd[1], 1) # stdout = pipe write end
+      LibC.close(pipefd[1])
+
+      # Build argv. We need null-terminated C strings in a null-terminated array.
+      if argument
+        argv = StaticArray(Pointer(UInt8), 4).new(Pointer(UInt8).null)
+        argv[0] = NSS_EXEC_SCRIPT.to_unsafe
+        argv[1] = command.to_unsafe
+        argv[2] = argument.to_unsafe
+        # argv[3] already null
+      else
+        argv = StaticArray(Pointer(UInt8), 3).new(Pointer(UInt8).null)
+        argv[0] = NSS_EXEC_SCRIPT.to_unsafe
+        argv[1] = command.to_unsafe
+        # argv[2] already null
+      end
+
+      # Empty environment — the script inherits nothing.
+      # If you need PATH or other vars, build a minimal envp here.
+      envp = StaticArray(Pointer(UInt8), 2).new(Pointer(UInt8).null)
+      envp[0] = "PATH=/usr/bin:/bin:/usr/sbin:/sbin".to_unsafe
+      # envp[1] already null
+
+      LibC.execve(NSS_EXEC_SCRIPT.to_unsafe, argv.to_unsafe, envp.to_unsafe)
+      # execve only returns on failure.
+      LibC._exit(127)
+    end
+
+    # ── Parent process ──────────────────────────────────────────────
+    LibC.close(pipefd[1]) # Close write end — only child writes.
+
+    # Read the child's output.
+    buf = Pointer(UInt8).malloc(READ_BUFFER_SIZE)
+    total_read = 0_i64
+
+    loop do
+      remaining = READ_BUFFER_SIZE - total_read - 1 # Reserve 1 byte for NUL
+      break if remaining <= 0
+
+      bytes = LibC.read(pipefd[0], (buf + total_read).as(Void*), remaining.to_u64)
+      break if bytes <= 0
+      total_read += bytes
+    end
+
+    LibC.close(pipefd[0])
+    buf[total_read] = 0_u8 # NUL-terminate
+
+    # Wait for child to exit.
+    wait_status = 0
+    LibC.waitpid(pid, pointerof(wait_status), 0)
+
+    # Extract exit code from wait status (WEXITSTATUS macro equivalent).
     exit_code = (wait_status >> 8) & 0xFF
 
     status = case exit_code
@@ -68,14 +116,13 @@ module NssExec
              else        NssStatus::UNAVAIL
              end
 
-    if status == NssStatus::SUCCESS && got_output
-      line = String.new(buf).strip
+    if status == NssStatus::SUCCESS && total_read > 0
+      line = String.new(buf, total_read).strip
       line.empty? ? {status, nil} : {status, line}
     else
       {status, nil}
     end
-  rescue ex
-    # Any Crystal-level exception (bad UTF-8, OOM, etc.) → UNAVAIL.
+  rescue
     {NssStatus::UNAVAIL, nil}
   end
 
