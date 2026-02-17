@@ -59,7 +59,8 @@ instructions, including a step-by-step guide for setting up a test VM.
 
 ## Script interface
 
-The module calls `/sbin/nss_exec` with a command and optional argument:
+The module calls `/sbin/nss_exec` (or the path in `$NSS_EXEC_SCRIPT`) with
+a command and optional argument:
 
     /sbin/nss_exec getpwnam <username>    # Lookup user by name
     /sbin/nss_exec getpwuid <uid>         # Lookup user by UID
@@ -80,6 +81,16 @@ Output format (one line to stdout):
     passwd: name:passwd:uid:gid:gecos:dir:shell
     group:  name:passwd:gid:member1,member2,...
     shadow: name:passwd:lastchg:min:max:warn:inact:expire:flag
+
+## Configuration
+
+The script path defaults to `/sbin/nss_exec`. Override it by setting the
+`NSS_EXEC_SCRIPT` environment variable:
+
+    NSS_EXEC_SCRIPT=/usr/local/bin/my_nss_script
+
+This is mainly useful for testing without root. In production, the default
+path is recommended.
 
 ## Testing
 
@@ -102,7 +113,8 @@ See [TEST_PLAN.md](TEST_PLAN.md) for the complete test plan.
     test/stress_test.sh        Comprehensive stress test suite
     examples/nss_exec.sh       Example lookup script
     TEST_PLAN.md               Full test plan with installation guide
-    Makefile                   Build, install, format
+    CHANGELOG.md               Version history
+    Makefile                   Build, install, format, lint
 
 ## License
 

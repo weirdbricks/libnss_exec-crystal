@@ -43,12 +43,14 @@ lib LibC
   fun strcmp(s1 : UInt8*, s2 : UInt8*) : Int
   fun memcpy(dest : Void*, src : Void*, n : SizeT) : Void*
   fun memset(s : Void*, c : Int, n : SizeT) : Void*
+  fun fcntl(fd : Int, cmd : Int, ...) : Int
+  fun getenv(name : UInt8*) : UInt8*
 end
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 
-NSS_EXEC_SCRIPT = "/sbin/nss_exec"
-READ_BUF_SIZE   = 4096
+DEFAULT_NSS_EXEC_SCRIPT = "/sbin/nss_exec"
+READ_BUF_SIZE           = 4096
 
 # NSS status codes
 NSS_STATUS_TRYAGAIN = -2
@@ -56,18 +58,26 @@ NSS_STATUS_UNAVAIL  = -1
 NSS_STATUS_NOTFOUND =  0
 NSS_STATUS_SUCCESS  =  1
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────
+# Resolve the script path: NSS_EXEC_SCRIPT env var overrides the default.
+# Cached on first call to avoid repeated getenv() in hot paths.
+module NssExecConfig
+  @@script_path : UInt8* = Pointer(UInt8).null
+  @@resolved : Bool = false
 
-# Find the next occurrence of `delim` in `str`, starting at `pos`.
-# Returns the index, or -1 if not found.
-private def find_char(str : UInt8*, len : LibC::SizeT, pos : LibC::SizeT, delim : UInt8) : Int64
-  i = pos
-  while i < len
-    return i.to_i64 if str[i] == delim
-    i += 1
+  def self.script_path : UInt8*
+    return @@script_path if @@resolved
+    @@resolved = true
+    env = LibC.getenv("NSS_EXEC_SCRIPT".to_unsafe)
+    if !env.null? && LibC.strlen(env) > 0
+      @@script_path = env
+    else
+      @@script_path = DEFAULT_NSS_EXEC_SCRIPT.to_unsafe
+    end
+    @@script_path
   end
-  -1_i64
 end
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
 # Write a NUL-terminated C string into the buffer at *cursor.
 # Advances cursor, decreases remaining. Returns pointer to the written string,
@@ -165,8 +175,10 @@ private def exec_child(pipefd : StaticArray(Int32, 2), command : UInt8*, argumen
   LibC.dup2(pipefd[1], 1)
   LibC.close(pipefd[1])
 
+  script = NssExecConfig.script_path
+
   argv = uninitialized UInt8*[4]
-  argv[0] = NSS_EXEC_SCRIPT.to_unsafe
+  argv[0] = script
   argv[1] = command
   argv[2] = argument.null? ? Pointer(UInt8).null : argument
   argv[3] = Pointer(UInt8).null
@@ -175,7 +187,7 @@ private def exec_child(pipefd : StaticArray(Int32, 2), command : UInt8*, argumen
   envp[0] = "PATH=/usr/bin:/bin:/usr/sbin:/sbin".to_unsafe
   envp[1] = Pointer(UInt8).null
 
-  LibC.execve(NSS_EXEC_SCRIPT.to_unsafe, argv.to_unsafe, envp.to_unsafe)
+  LibC.execve(script, argv.to_unsafe, envp.to_unsafe)
   LibC._exit(127)
 end
 
@@ -222,15 +234,36 @@ private def exit_code_to_status(wait_status : Int32) : Int32
   end
 end
 
-# Execute /sbin/nss_exec with command + optional argument via fork/execve.
-# Reads one line of output into `out_buf` (caller-provided, `out_size` bytes).
-# Returns {nss_status, bytes_read}.
+# Set close-on-exec flag on a file descriptor.
+private def set_cloexec(fd : Int32) : Void
+  LibC.fcntl(fd, LibC::F_SETFD, LibC::FD_CLOEXEC)
+end
+
+# Wait for child process, retrying on EINTR.
+private def waitpid_retry(pid : LibC::PidT) : Int32
+  wait_status = 0
+  loop do
+    ret = LibC.waitpid(pid, pointerof(wait_status), 0)
+    break if ret >= 0
+    break unless Errno.value == Errno::EINTR
+  end
+  wait_status
+end
+
+# Execute /sbin/nss_exec (or $NSS_EXEC_SCRIPT) with command + optional argument
+# via fork/execve. Reads one line of output into `out_buf` (caller-provided,
+# `out_size` bytes). Returns {nss_status, bytes_read}.
 private def exec_script(command : UInt8*, argument : UInt8*,
                         out_buf : UInt8*, out_size : LibC::SizeT) : {Int32, LibC::SizeT}
-  return {NSS_STATUS_UNAVAIL, 0_u64} if LibC.access(NSS_EXEC_SCRIPT.to_unsafe, LibC::X_OK) != 0
+  script = NssExecConfig.script_path
+  return {NSS_STATUS_UNAVAIL, 0_u64} if LibC.access(script, LibC::X_OK) != 0
 
   pipefd = StaticArray(Int32, 2).new(0)
   return {NSS_STATUS_UNAVAIL, 0_u64} if LibC.pipe(pipefd) != 0
+
+  # Prevent pipe FDs from leaking to grandchild processes.
+  set_cloexec(pipefd[0])
+  set_cloexec(pipefd[1])
 
   pid = LibC.fork
   if pid < 0
@@ -245,10 +278,7 @@ private def exec_script(command : UInt8*, argument : UInt8*,
   total = read_pipe_output(pipefd[0], out_buf, out_size)
   LibC.close(pipefd[0])
 
-  wait_status = 0
-  LibC.waitpid(pid, pointerof(wait_status), 0)
-
-  {exit_code_to_status(wait_status), total}
+  {exit_code_to_status(waitpid_retry(pid)), total}
 end
 
 # Convenience: format an Int64 as a decimal string into a stack buffer.
@@ -517,6 +547,11 @@ private def fill_shadow(line : UInt8*, line_len : LibC::SizeT,
 end
 
 # ─── Shared state for enumeration ────────────────────────────────────────────
+# WARNING: These indices are not thread-safe. If two threads call getpwent_r
+# simultaneously, they will clobber each other's position. This matches the
+# behavior of the original C libnss_exec. glibc typically serializes NSS
+# enumeration calls, so this is safe in practice. Full thread safety would
+# require pthread mutexes, which we avoid to keep the library minimal.
 module NssExecState
   @@passwd_index : Int64 = 0_i64
   @@group_index : Int64 = 0_i64
@@ -544,18 +579,6 @@ module NssExecState
 
   def self.shadow_index=(v : Int64)
     @@shadow_index = v
-  end
-end
-
-# ─── Generic lookup helper ───────────────────────────────────────────────────
-
-private def do_lookup(command : UInt8*, argument : UInt8*) : {Int32, UInt8*, LibC::SizeT}
-  buf = Pointer(UInt8).malloc(READ_BUF_SIZE)
-  status, bytes = exec_script(command, argument, buf, READ_BUF_SIZE.to_u64)
-  if status == NSS_STATUS_SUCCESS && bytes > 0
-    {status, buf, bytes}
-  else
-    {status, Pointer(UInt8).null, 0_u64}
   end
 end
 
