@@ -13,22 +13,22 @@
 # glibc structures not always present in Crystal's LibC bindings.
 lib LibC
   struct Group
-    gr_name   : UInt8*
+    gr_name : UInt8*
     gr_passwd : UInt8*
-    gr_gid    : GidT
-    gr_mem    : UInt8**
+    gr_gid : GidT
+    gr_mem : UInt8**
   end
 
   struct Spwd
-    sp_namp   : UInt8*
-    sp_pwdp   : UInt8*
+    sp_namp : UInt8*
+    sp_pwdp : UInt8*
     sp_lstchg : Long
-    sp_min    : Long
-    sp_max    : Long
-    sp_warn   : Long
-    sp_inact  : Long
+    sp_min : Long
+    sp_max : Long
+    sp_warn : Long
+    sp_inact : Long
     sp_expire : Long
-    sp_flag   : ULong
+    sp_flag : ULong
   end
 end
 

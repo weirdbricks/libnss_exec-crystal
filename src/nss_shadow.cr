@@ -77,22 +77,22 @@ end
 
 fun _nss_exec_setspent(stayopen : LibC::Int) : LibC::Int
   NssExec::Shadow.setspent(stayopen).value
-rescue
-  NssExec::NssStatus::UNAVAIL.value
+    rescue
+      NssExec::NssStatus::UNAVAIL.value
 end
 
 fun _nss_exec_endspent : LibC::Int
   NssExec::Shadow.endspent.value
-rescue
-  NssExec::NssStatus::SUCCESS.value
+    rescue
+      NssExec::NssStatus::SUCCESS.value
 end
 
 fun _nss_exec_getspent_r(result : LibC::Spwd*, buffer : UInt8*,
                          buflen : LibC::SizeT, errnop : LibC::Int*) : LibC::Int
   NssExec::Shadow.getspent(result, buffer, buflen, errnop).value
-rescue
-  errnop.value = LibC::ENOENT
-  NssExec::NssStatus::UNAVAIL.value
+    rescue
+      errnop.value = LibC::ENOENT
+      NssExec::NssStatus::UNAVAIL.value
 end
 
 fun _nss_exec_getspnam_r(name : UInt8*, result : LibC::Spwd*,
@@ -100,7 +100,7 @@ fun _nss_exec_getspnam_r(name : UInt8*, result : LibC::Spwd*,
                          errnop : LibC::Int*) : LibC::Int
   name_str = String.new(name)
   NssExec::Shadow.getspnam(name_str, result, buffer, buflen, errnop).value
-rescue
-  errnop.value = LibC::ENOENT
-  NssExec::NssStatus::UNAVAIL.value
+    rescue
+      errnop.value = LibC::ENOENT
+      NssExec::NssStatus::UNAVAIL.value
 end

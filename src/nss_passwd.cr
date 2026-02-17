@@ -100,31 +100,31 @@ end
 
 fun _nss_exec_setpwent(stayopen : LibC::Int) : LibC::Int
   NssExec::Passwd.setpwent(stayopen).value
-rescue
-  NssExec::NssStatus::UNAVAIL.value
+    rescue
+      NssExec::NssStatus::UNAVAIL.value
 end
 
 fun _nss_exec_endpwent : LibC::Int
   NssExec::Passwd.endpwent.value
-rescue
-  NssExec::NssStatus::SUCCESS.value
+    rescue
+      NssExec::NssStatus::SUCCESS.value
 end
 
 fun _nss_exec_getpwent_r(result : LibC::Passwd*, buffer : UInt8*,
                          buflen : LibC::SizeT, errnop : LibC::Int*) : LibC::Int
   NssExec::Passwd.getpwent(result, buffer, buflen, errnop).value
-rescue
-  errnop.value = LibC::ENOENT
-  NssExec::NssStatus::UNAVAIL.value
+    rescue
+      errnop.value = LibC::ENOENT
+      NssExec::NssStatus::UNAVAIL.value
 end
 
 fun _nss_exec_getpwuid_r(uid : LibC::UidT, result : LibC::Passwd*,
                          buffer : UInt8*, buflen : LibC::SizeT,
                          errnop : LibC::Int*) : LibC::Int
   NssExec::Passwd.getpwuid(uid, result, buffer, buflen, errnop).value
-rescue
-  errnop.value = LibC::ENOENT
-  NssExec::NssStatus::UNAVAIL.value
+    rescue
+      errnop.value = LibC::ENOENT
+      NssExec::NssStatus::UNAVAIL.value
 end
 
 fun _nss_exec_getpwnam_r(name : UInt8*, result : LibC::Passwd*,
@@ -132,7 +132,7 @@ fun _nss_exec_getpwnam_r(name : UInt8*, result : LibC::Passwd*,
                          errnop : LibC::Int*) : LibC::Int
   name_str = String.new(name)
   NssExec::Passwd.getpwnam(name_str, result, buffer, buflen, errnop).value
-rescue
-  errnop.value = LibC::ENOENT
-  NssExec::NssStatus::UNAVAIL.value
+    rescue
+      errnop.value = LibC::ENOENT
+      NssExec::NssStatus::UNAVAIL.value
 end
